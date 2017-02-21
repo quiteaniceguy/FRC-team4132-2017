@@ -1,6 +1,7 @@
 package org.usfirst.frc.team4132.robot;
 
 import edu.wpi.first.wpilibj.AnalogGyro;
+import edu.wpi.first.wpilibj.Encoder;
 import edu.wpi.first.wpilibj.IterativeRobot;
 import edu.wpi.first.wpilibj.Joystick;
 import edu.wpi.first.wpilibj.RobotDrive;
@@ -22,39 +23,52 @@ import com.kauailabs.navx.frc.AHRS;
  * directory.
  */
 public class Robot extends IterativeRobot {
+	
+
 	final String defaultAuto = "Default";
 	final String customAuto = "My Auto";
 	String autoSelected;
 	SendableChooser<String> chooser = new SendableChooser<>();
 	
-	final float GUMBALLSPEED=.35f, DRIVESPEED=.6f, TURNSPEED=.6f;
+	final float GUMBALLSPEED=.25f, DRIVESPEED=1f, TURNSPEED=.6f, SHOOTERSPEED=1f, LIFTERSPEED=.75f, GUMBALLCOUNTPERMILI=.15f, COUNTPERMILITHRESHOLD=.01f; 
 	
+	int timerCounter=0;
+	
+	double lastTime;
+	double lastCount;
 	
 	//kMXP port is port on roborio
 	AHRS ahrs;
 	
+	//motors
 	private Spark fl_Wheel;
 	private Spark fr_Wheel;
 	private Spark bl_Wheel;
 	private Spark br_Wheel;
 	
-	private Talon shooter;
+	private Talon gumballMotor;
+	private Spark shooterMotor;
+	
+	private Talon lifter_one;
+	private Talon lifter_two;
 
 	Joystick controller;
 	
 	RobotDrive drive;
 	
+	//sensors
+	Encoder gumballEncoder;
 	
-	enum DriveAxis{
-		DRIVEAXIS, SHOOTERAXIS;
+	enum GumballState{
+		MOVINGBACKWARDS, NOTPRESSED, MOVING, OVERRIDE, DELAY;
 	}
-	enum ButtonState{
-		EDGE, DOWN, RELEASED;
-	}
-
-	DriveAxis currentDriveAxis=DriveAxis.DRIVEAXIS;
-	ButtonState currentButtonState=ButtonState.RELEASED;
+	GumballState currentGumballState=GumballState.NOTPRESSED;
+	double gumballTimer=0;
+	int gumballFailsInRow=0;
+	double vGumballSpeed;
+	int nFails=0;
 	/**
+	 * 
 	 * This function is run when the robot is first started up and should be
 	 * used for any initialization code.
 	 */
@@ -64,15 +78,35 @@ public class Robot extends IterativeRobot {
 		chooser.addObject("My Auto", customAuto);
 		SmartDashboard.putData("Auto choices", chooser);
 		
+		//(port, port, invertCouting?, encoder type
+		gumballEncoder=new Encoder(7,8, false, Encoder.EncodingType.k1X);
+				
+				
+				
+		//sensors && counters
+		lastTime=System.currentTimeMillis();
+		lastCount=gumballEncoder.getRaw();
 		
-		//must change
-		fl_Wheel=new Spark(1);
-		fr_Wheel=new Spark(4);
-		bl_Wheel=new Spark(2);
-		br_Wheel=new Spark(3);
+		//motors
+		fl_Wheel=new Spark(7);
+		fr_Wheel=new Spark(3);
+		bl_Wheel=new Spark(6);
+		br_Wheel=new Spark(4);
 		
-		shooter=new Talon(0);
-		shooter.setInverted(true);
+		fl_Wheel.setInverted(true);
+		fr_Wheel.setInverted(true);
+		br_Wheel.setInverted(true);
+		
+		gumballMotor=new Talon(1);
+		gumballMotor.setInverted(true);
+		
+		shooterMotor=new Spark(5);
+		
+		lifter_one=new Talon(2);
+		lifter_two=new Talon(0);
+		lifter_one.setInverted(true);
+		lifter_two.setInverted(true);
+		
 		
 		
 		
@@ -81,6 +115,7 @@ public class Robot extends IterativeRobot {
 		controller=new Joystick(0);
 		
 		drive=new RobotDrive(fl_Wheel, bl_Wheel, fr_Wheel, br_Wheel);
+		
 		
 		
 	}
@@ -128,48 +163,109 @@ public class Robot extends IterativeRobot {
 	 */
 	@Override
 	public void teleopPeriodic() {
+		///0 at end of constructor is used for gyro value
+		///axis 0 is x	
+		//drive.mecanumDrive_Cartesian(controller.getRawAxis(4)*DRIVESPEED, controller.getRawAxis(1)*DRIVESPEED, controller.getRawAxis(0)*TURNSPEED, 0);
 		
-		///chooses drive system
-		if(currentDriveAxis==DriveAxis.DRIVEAXIS){
-			///0 at end of constructor is used for gyro value
-			drive.mecanumDrive_Cartesian(controller.getRawAxis(0)*DRIVESPEED, controller.getRawAxis(1)*DRIVESPEED, controller.getRawAxis(4)*TURNSPEED, 0);
-		}else{
-			drive.mecanumDrive_Cartesian(controller.getRawAxis(0)*DRIVESPEED, controller.getRawAxis(1)*DRIVESPEED, controller.getRawAxis(4)*TURNSPEED, 0);
-		}
 		
-		///gets button state and does according actions
-		switch(currentButtonState){
-		case RELEASED:
-			if(controller.getRawButton(4))
-				currentButtonState=ButtonState.EDGE;
+		
+
+		
+		
+		
+		//gumballMotor
+		
+		
+		///change speed of gumball wheel according to pressure on wheel
+		vGumballSpeed=GUMBALLSPEED * (GUMBALLCOUNTPERMILI / ((gumballEncoder.get()-lastCount)/(System.currentTimeMillis()-lastTime)) );
+		///sometimes it's set to negative
+		vGumballSpeed=Math.abs(vGumballSpeed);
+		if(vGumballSpeed>GUMBALLSPEED*2)vGumballSpeed=GUMBALLSPEED*2;
+		
+		
+		
+		switch(currentGumballState){
+		case NOTPRESSED:
+			gumballMotor.set(0);
+			if(controller.getRawButton(5)){
+				currentGumballState=GumballState.MOVING;
+			}
+			else if(controller.getRawButton(4)){
+				currentGumballState=GumballState.MOVINGBACKWARDS;
+			}
 			break;
 			
-		case EDGE:
-			//switches to other drive system using opposite axis
-			if(currentDriveAxis==DriveAxis.DRIVEAXIS){
-				currentDriveAxis=DriveAxis.SHOOTERAXIS;
-			}else{
-				currentDriveAxis=DriveAxis.DRIVEAXIS;
+		case MOVING:
+			gumballMotor.set(vGumballSpeed);
+			
+			//finds number of failes in a row
+			if((gumballEncoder.get()-lastCount)/(System.currentTimeMillis()-lastTime)<COUNTPERMILITHRESHOLD){
+				
+				gumballFailsInRow++;
+			}
+			else{
+				gumballFailsInRow=0;
+			}
+			//System.out.println("gumballencoder per mili: "+(gumballEncoder.get()-lastCount)/(System.currentTimeMillis()-lastTime));
+			//System.out.println("gumball count per loop: "+(gumballEncoder.get()-lastCount));
+			//System.out.println("fails in a row: "+gumballFailsInRow);
+			if( controller.getRawButton(5) && gumballFailsInRow>25){
+				currentGumballState=GumballState.MOVINGBACKWARDS;
+				System.out.println("failed: "+nFails++);
+				gumballFailsInRow=0;
+			}
+			else if(!controller.getRawButton(5)){
+				
+				currentGumballState=GumballState.NOTPRESSED;
+				gumballFailsInRow=0;
+				
+			}
+			System.out.println("rails in a row: "+gumballFailsInRow);
+			break;
+			
+			
+		case MOVINGBACKWARDS:
+			gumballMotor.set(-GUMBALLSPEED);
+			gumballTimer+=System.currentTimeMillis()-lastTime;
+			if(gumballTimer>250){
+				currentGumballState=GumballState.NOTPRESSED;
+				gumballTimer=0;
+			}
+			break;
+			
+		case DELAY:
+			gumballMotor.set(vGumballSpeed);
+			gumballTimer+=System.currentTimeMillis()-lastTime;
+			if(gumballTimer>1000 || !controller.getRawButton(6)){
+				currentGumballState=GumballState.NOTPRESSED;
+				gumballTimer=0;
 			}
 			
-			currentButtonState=ButtonState.DOWN;
-			break;
-			
-		case DOWN: 
-			if(!controller.getRawButton(4))
-				currentButtonState=ButtonState.RELEASED;
-			break;
 		}
 		
+		
+		
+		
 		//shooter
-		if(controller.getRawButton(1)){
-			shooter.set(GUMBALLSPEED);
-			System.out.println("button pressed");
+		if(controller.getRawButton(6)){
+			shooterMotor.set(SHOOTERSPEED);
+			//System.out.println("shooting");
 		}
 		else{
-			shooter.set(0);
-			System.out.println("not pressed");
+			shooterMotor.set(0);
 		}
+		
+		
+		//lifter b button
+		if(controller.getRawButton(2)){
+			lifter_one.set(LIFTERSPEED);
+			lifter_two.set(LIFTERSPEED);
+		}else{
+			lifter_one.set(0);
+			lifter_two.set(0);
+		}
+		
+		
 		
 		//testing with nav board
 		/*
@@ -183,10 +279,15 @@ public class Robot extends IterativeRobot {
 		
 		
 		///testing 
-		System.out.println("currentDriveAxis: "+currentDriveAxis);
-		System.out.println("currentButtonState: "+currentButtonState);
+		
+        //double currentTime=System.currentTimeMillis();
+        //System.out.println( "milis Time per sixty frames: "+String.valueOf( currentTime-lastTime) ); 
+        lastTime=System.currentTimeMillis();
+        lastCount=gumballEncoder.get();
+        
+	
 	}
-
+	
 	/**
 	 * This function is called periodically during test mode
 	 */
